@@ -8,7 +8,7 @@ After Myanmar's 2021 military coup, internet shutdowns and censorship became par
 
 ## Live Demo
 
-> Deployed link: _[add your deployed URL here after running `wrangler deploy`]_
+> Deployed link: https://cf-ai-internet-freedom.aungkzin24.workers.dev
 
 ---
 
