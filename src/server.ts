@@ -1,23 +1,73 @@
 import { createWorkersAI } from "workers-ai-provider";
-import { callable, routeAgentRequest, type Schedule } from "agents";
-import { getSchedulePrompt, scheduleSchema } from "agents/schedule";
+import { callable, routeAgentRequest } from "agents";
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import {
   convertToModelMessages,
   pruneMessages,
   stepCountIs,
   streamText,
-  tool,
   type ModelMessage
 } from "ai";
-import { z } from "zod";
 
-/**
- * The AI SDK's downloadAssets step runs `new URL(data)` on every file
- * part's string data. Data URIs parse as valid URLs, so it tries to
- * HTTP-fetch them and fails. Decode to Uint8Array so the SDK treats
- * them as inline data instead.
- */
+// What this assistant knows and cares about. Written to reflect real experience —
+// not just a demo prompt. Myanmar's 2021 coup meant real internet shutdowns,
+// and tools like 1.1.1.1 were the difference between being connected and not.
+const SYSTEM_PROMPT = `You are an internet freedom and security assistant. You were built by someone from Myanmar who personally relied on Cloudflare's 1.1.1.1 DNS resolver to stay connected during internet restrictions following the 2021 military coup.
+
+Your purpose is to help people understand the tools and concepts that keep the internet open, secure, and accessible — especially in places where that's genuinely difficult.
+
+What you know well:
+
+DNS and name resolution
+- How DNS works end-to-end: query → recursive resolver → authoritative nameserver → response
+- Why DNS is a common censorship point and how ISPs use it to block sites
+- DNS over HTTPS (DoH) and DNS over TLS (DoT) — what they protect, how to enable them
+- Public resolvers: Cloudflare 1.1.1.1, Google 8.8.8.8, Quad9 — real tradeoffs between them
+- How to configure 1.1.1.1 on Android, iOS, Windows, macOS, and routers
+
+TLS and HTTPS
+- How TLS certificates work, what certificate authorities are, and why browsers trust them
+- What TLS encrypts and what it still leaks (metadata like SNI remains visible)
+- SNI filtering and how governments use it to block HTTPS sites
+- Encrypted Client Hello (ECH) — the next step toward hiding your connection target
+- HSTS, certificate pinning, and common misconfigurations
+
+VPNs
+- How VPN tunneling actually works: WireGuard, OpenVPN, IKEv2/IPSec — the real packet flow
+- What a VPN protects you from and what it doesn't
+- How to tell if a VPN provider is worth trusting: no-logs claims, jurisdiction, audits
+- Cloudflare WARP — how it differs from a traditional VPN and when to use it
+- VPN blocking techniques (IP blocking, DPI, protocol fingerprinting) and workarounds
+
+Censorship circumvention
+- Tor: how onion routing works, entry guards, exit nodes, .onion services
+- Tor bridges and pluggable transports: obfs4, meek, Snowflake
+- Shadowsocks, V2Ray, VLESS, Trojan — tools built specifically for obfuscating traffic
+- Psiphon, Lantern, Outline — more accessible options for less technical users
+- How to layer tools for better protection
+
+Network surveillance and filtering
+- How deep packet inspection (DPI) works
+- IP blocking, BGP hijacking, DNS poisoning
+- What metadata is visible even with encrypted connections
+- Traffic analysis and correlation attacks — what they mean in practice
+
+Digital safety for people who need it most
+- Secure messaging: Signal, Session, Briar — when each one is the right choice
+- Operational security basics for journalists and activists
+- Device security when crossing borders or operating under surveillance
+
+How you respond:
+- Be direct and practical. If someone is trying to get through a firewall, actually help them.
+- Explain technical concepts clearly but don't oversimplify — people can handle real detail.
+- Be honest about limitations. No tool is foolproof. Tor can be slow. VPNs can get blocked.
+- When it fits, mention Cloudflare's free tools: 1.1.1.1, WARP, and their free plan for developers.
+- If you genuinely don't know something, say so.
+- Stay focused on internet security and freedom. If someone asks about something unrelated, politely redirect them.`;
+
+// The AI SDK treats data URIs as remote URLs and tries to HTTP-fetch them,
+// which fails. Converting to Uint8Array first tells the SDK to treat the
+// data as inline bytes instead — which is what we actually want.
 function inlineDataUrls(messages: ModelMessage[]): ModelMessage[] {
   return messages.map((msg) => {
     if (msg.role !== "user" || typeof msg.content === "string") return msg;
@@ -35,10 +85,11 @@ function inlineDataUrls(messages: ModelMessage[]): ModelMessage[] {
 }
 
 export class ChatAgent extends AIChatAgent<Env> {
+  // How many messages to keep in persistent storage per conversation
   maxPersistedMessages = 100;
 
   onStart() {
-    // Configure OAuth popup behavior for MCP servers that require authentication
+    // Handle OAuth popups for MCP servers that require login
     this.mcp.configureOAuthCallback({
       customHandler: (result) => {
         if (result.authSuccess) {
@@ -66,159 +117,30 @@ export class ChatAgent extends AIChatAgent<Env> {
   }
 
   async onChatMessage(_onFinish: unknown, options?: OnChatMessageOptions) {
+    // Pick up any tools from connected MCP servers
     const mcpTools = this.mcp.getAITools();
     const workersai = createWorkersAI({ binding: this.env.AI });
 
     const result = streamText({
-      model: workersai("@cf/moonshotai/kimi-k2.5", {
+      // Llama 3.3 70B via Cloudflare Workers AI — solid instruction-following
+      // and good at technical explanations without needing a paid API key
+      model: workersai("@cf/meta/llama-3.3-70b-instruct-fp8-fast", {
         sessionAffinity: this.sessionAffinity
       }),
-      system: `You are a helpful assistant that can understand images. You can check the weather, get the user's timezone, run calculations, and schedule tasks. When users share images, describe what you see and answer questions about them.
-
-${getSchedulePrompt({ date: new Date() })}
-
-If the user asks to schedule a task, use the schedule tool to schedule the task.`,
-      // Prune old tool calls to save tokens on long conversations
+      system: SYSTEM_PROMPT,
+      // Trim old tool call history to keep things reasonable on long conversations
       messages: pruneMessages({
         messages: inlineDataUrls(await convertToModelMessages(this.messages)),
         toolCalls: "before-last-2-messages"
       }),
       tools: {
-        // MCP tools from connected servers
-        ...mcpTools,
-
-        // Server-side tool: runs automatically on the server
-        getWeather: tool({
-          description: "Get the current weather for a city",
-          inputSchema: z.object({
-            city: z.string().describe("City name")
-          }),
-          execute: async ({ city }) => {
-            // Replace with a real weather API in production
-            const conditions = ["sunny", "cloudy", "rainy", "snowy"];
-            const temp = Math.floor(Math.random() * 30) + 5;
-            return {
-              city,
-              temperature: temp,
-              condition:
-                conditions[Math.floor(Math.random() * conditions.length)],
-              unit: "celsius"
-            };
-          }
-        }),
-
-        // Client-side tool: no execute function — the browser handles it
-        getUserTimezone: tool({
-          description:
-            "Get the user's timezone from their browser. Use this when you need to know the user's local time.",
-          inputSchema: z.object({})
-        }),
-
-        // Approval tool: requires user confirmation before executing
-        calculate: tool({
-          description:
-            "Perform a math calculation with two numbers. Requires user approval for large numbers.",
-          inputSchema: z.object({
-            a: z.number().describe("First number"),
-            b: z.number().describe("Second number"),
-            operator: z
-              .enum(["+", "-", "*", "/", "%"])
-              .describe("Arithmetic operator")
-          }),
-          needsApproval: async ({ a, b }) =>
-            Math.abs(a) > 1000 || Math.abs(b) > 1000,
-          execute: async ({ a, b, operator }) => {
-            const ops: Record<string, (x: number, y: number) => number> = {
-              "+": (x, y) => x + y,
-              "-": (x, y) => x - y,
-              "*": (x, y) => x * y,
-              "/": (x, y) => x / y,
-              "%": (x, y) => x % y
-            };
-            if (operator === "/" && b === 0) {
-              return { error: "Division by zero" };
-            }
-            return {
-              expression: `${a} ${operator} ${b}`,
-              result: ops[operator](a, b)
-            };
-          }
-        }),
-
-        scheduleTask: tool({
-          description:
-            "Schedule a task to be executed at a later time. Use this when the user asks to be reminded or wants something done later.",
-          inputSchema: scheduleSchema,
-          execute: async ({ when, description }) => {
-            if (when.type === "no-schedule") {
-              return "Not a valid schedule input";
-            }
-            const input =
-              when.type === "scheduled"
-                ? when.date
-                : when.type === "delayed"
-                  ? when.delayInSeconds
-                  : when.type === "cron"
-                    ? when.cron
-                    : null;
-            if (!input) return "Invalid schedule type";
-            try {
-              this.schedule(input, "executeTask", description, {
-                idempotent: true
-              });
-              return `Task scheduled: "${description}" (${when.type}: ${input})`;
-            } catch (error) {
-              return `Error scheduling task: ${error}`;
-            }
-          }
-        }),
-
-        getScheduledTasks: tool({
-          description: "List all tasks that have been scheduled",
-          inputSchema: z.object({}),
-          execute: async () => {
-            const tasks = this.getSchedules();
-            return tasks.length > 0 ? tasks : "No scheduled tasks found.";
-          }
-        }),
-
-        cancelScheduledTask: tool({
-          description: "Cancel a scheduled task by its ID",
-          inputSchema: z.object({
-            taskId: z.string().describe("The ID of the task to cancel")
-          }),
-          execute: async ({ taskId }) => {
-            try {
-              this.cancelSchedule(taskId);
-              return `Task ${taskId} cancelled.`;
-            } catch (error) {
-              return `Error cancelling task: ${error}`;
-            }
-          }
-        })
+        ...mcpTools
       },
       stopWhen: stepCountIs(5),
       abortSignal: options?.abortSignal
     });
 
     return result.toUIMessageStreamResponse();
-  }
-
-  async executeTask(description: string, _task: Schedule<string>) {
-    // Do the actual work here (send email, call API, etc.)
-    console.log(`Executing scheduled task: ${description}`);
-
-    // Notify connected clients via a broadcast event.
-    // We use broadcast() instead of saveMessages() to avoid injecting
-    // into chat history — that would cause the AI to see the notification
-    // as new context and potentially loop.
-    this.broadcast(
-      JSON.stringify({
-        type: "scheduled-task",
-        description,
-        timestamp: new Date().toISOString()
-      })
-    );
   }
 }
 

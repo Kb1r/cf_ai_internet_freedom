@@ -322,17 +322,9 @@ function Chat() {
   } = useAgentChat({
     agent,
     onToolCall: async (event) => {
-      if (
-        "addToolOutput" in event &&
-        event.toolCall.toolName === "getUserTimezone"
-      ) {
-        event.addToolOutput({
-          toolCallId: event.toolCall.toolCallId,
-          output: {
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            localTime: new Date().toLocaleTimeString()
-          }
-        });
+      // Handle any client-side tool calls from MCP servers
+      if ("addToolOutput" in event) {
+        console.log("Client tool call:", event.toolCall.toolName);
       }
     }
   });
@@ -449,11 +441,11 @@ function Chat() {
         <div className="max-w-3xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h1 className="text-lg font-semibold text-kumo-default">
-              <span className="mr-2">⛅</span>Agent Starter
+              <span className="mr-2">🌐</span>Internet Freedom Assistant
             </h1>
             <Badge variant="secondary">
               <ChatCircleDotsIcon size={12} weight="bold" className="mr-1" />
-              AI Chat
+              Internet Freedom
             </Badge>
           </div>
           <div className="flex items-center gap-3">
@@ -656,36 +648,56 @@ function Chat() {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-5 py-6 space-y-5">
+
+          {/* Landing section — shown when there are no messages yet */}
           {messages.length === 0 && (
-            <Empty
-              icon={<ChatCircleDotsIcon size={32} />}
-              title="Start a conversation"
-              contents={
-                <div className="flex flex-wrap justify-center gap-2">
-                  {[
-                    "What's the weather in Paris?",
-                    "What timezone am I in?",
-                    "Calculate 5000 * 3",
-                    "Remind me in 5 minutes to take a break"
-                  ].map((prompt) => (
-                    <Button
-                      key={prompt}
-                      variant="outline"
-                      size="sm"
-                      disabled={isStreaming}
-                      onClick={() => {
-                        sendMessage({
-                          role: "user",
-                          parts: [{ type: "text", text: prompt }]
-                        });
-                      }}
-                    >
-                      {prompt}
-                    </Button>
-                  ))}
-                </div>
-              }
-            />
+            <div className="space-y-6">
+              <div className="max-w-xl mx-auto text-center space-y-3 pt-8">
+                <div className="text-5xl mb-2">🌐</div>
+                <h2 className="text-2xl font-bold text-kumo-default">
+                  Internet Freedom Assistant
+                </h2>
+                <p className="text-sm leading-relaxed text-kumo-inactive">
+                  An AI assistant that explains the tools and concepts behind
+                  internet security and freedom — DNS, TLS, VPNs, and censorship
+                  circumvention.
+                </p>
+                <p className="text-xs leading-relaxed italic text-kumo-inactive px-6">
+                  Built by someone from Myanmar who used Cloudflare's 1.1.1.1
+                  DNS resolver to stay connected during internet restrictions
+                  following the 2021 military coup. This is personal.
+                </p>
+              </div>
+              <Empty
+                icon={<ChatCircleDotsIcon size={28} />}
+                title="Try one of these to get started"
+                contents={
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {[
+                      "How does DNS censorship work?",
+                      "What's the difference between a VPN and Tor?",
+                      "How do I set up 1.1.1.1 on my phone?",
+                      "What is TLS and why does HTTPS matter?"
+                    ].map((prompt) => (
+                      <Button
+                        key={prompt}
+                        variant="outline"
+                        size="sm"
+                        disabled={isStreaming}
+                        onClick={() => {
+                          sendMessage({
+                            role: "user",
+                            parts: [{ type: "text", text: prompt }]
+                          });
+                        }}
+                      >
+                        {prompt}
+                      </Button>
+                    ))}
+                  </div>
+                }
+              />
+            </div>
           )}
 
           {messages.map((message: UIMessage, index: number) => {
@@ -892,7 +904,7 @@ function Chat() {
               placeholder={
                 attachments.length > 0
                   ? "Add a message or send images..."
-                  : "Send a message..."
+                  : "Ask about DNS, TLS, VPNs, censorship circumvention..."
               }
               disabled={!connected || isStreaming}
               rows={1}
